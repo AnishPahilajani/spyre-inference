@@ -65,7 +65,8 @@ def test_merged_column_matches_reference(
     expected = F.linear(x, layer.weight, layer.bias)
 
     mlp = mlp.to("spyre")
-    gate_up, bias = layer(x.to("spyre"))
+    with torch.no_grad():
+        gate_up, bias = layer(x.to("spyre"))
     assert bias is None
     assert gate_up.shape == (num_tokens, 2 * intermediate_size)
 
@@ -130,7 +131,8 @@ def test_qkv_matches_reference(tp_group, num_tokens, num_heads, num_kv_heads, he
         assert hasattr(layer, attr), f"missing unfused param {attr}"
 
     layer = layer.to("spyre")
-    qkv, bias = layer(x.to("spyre"))
+    with torch.no_grad():
+        qkv, bias = layer(x.to("spyre"))
     assert bias is None
     assert isinstance(qkv, SplitQKV)
     # Exercise the unmodified downstream idiom.
@@ -184,7 +186,8 @@ def test_row_parallel_matches_reference(tp_group, num_tokens, input_size, output
     expected = F.linear(x, layer.weight, layer.bias)
 
     layer = layer.to("spyre")
-    actual, _ = layer(x.to("spyre"))
+    with torch.no_grad():
+        actual, _ = layer(x.to("spyre"))
 
     torch.testing.assert_close(actual.cpu().float(), expected.float(), atol=1e-2, rtol=1e-2)
 
