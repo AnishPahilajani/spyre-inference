@@ -66,7 +66,9 @@ def _resolve_spyre_devices() -> None:
         )
 
     if not all(is_int_list) and not all(is_pcie_list):
-        invalid = [t for t, is_i, is_p in zip(tokens, is_int_list, is_pcie_list) if not is_i and not is_p]
+        invalid = [
+            t for t, is_i, is_p in zip(tokens, is_int_list, is_pcie_list) if not is_i and not is_p
+        ]
         raise ValueError(f"Invalid device entry {invalid[0]!r} in SPYRE_DEVICES: {raw!r}")
 
     # If all are integers, normalize to comma-separated string
@@ -74,29 +76,33 @@ def _resolve_spyre_devices() -> None:
         os.environ["SPYRE_DEVICES"] = ",".join(tokens)
         return
 
-    # If all are PCIe addresses, resolve them using AIU_WORLD_RANK_<idx>
+    def _normalize_pcie(addr: str) -> str:
+        addr = addr.strip().lower()
+        parts = addr.split(":")
+        if len(parts) == 2:
+            return f"0000:{addr}"
+        elif len(parts) == 3 and len(parts[0]) < 4:
+            return f"{parts[0].zfill(4)}:{parts[1]}:{parts[2]}"
+        return addr
+
+    # If all are PCIe addresses, resolve them using AIU_WORLD_RANK_<idx> with exact matching
     pcie_to_idx = {}
     for k, v in os.environ.items():
         if k.startswith("AIU_WORLD_RANK_"):
             try:
-                idx = int(k[len("AIU_WORLD_RANK_"):])
-                pcie_to_idx[v.strip().lower()] = idx
+                idx = int(k[len("AIU_WORLD_RANK_") :])
+                pcie_to_idx[_normalize_pcie(v)] = idx
             except ValueError:
                 pass
 
     resolved_indices = []
     for token in tokens:
-        t_lower = token.lower()
-        matched = pcie_to_idx.get(t_lower)
-        if matched is None:
-            for pcie_addr, idx in pcie_to_idx.items():
-                if pcie_addr.endswith(t_lower) or t_lower.endswith(pcie_addr):
-                    matched = idx
-                    break
+        norm_token = _normalize_pcie(token)
+        matched = pcie_to_idx.get(norm_token)
         if matched is None:
             raise ValueError(
-                f"PCIe address {token!r} in SPYRE_DEVICES was not found among available devices: "
-                f"{list(pcie_to_idx.keys())}"
+                f"PCIe address {token!r} in SPYRE_DEVICES was not found among available "
+                f"devices on this host: {list(pcie_to_idx.keys())}"
             )
         resolved_indices.append(str(matched))
 
