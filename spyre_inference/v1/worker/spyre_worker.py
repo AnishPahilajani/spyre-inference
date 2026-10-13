@@ -36,8 +36,66 @@ from spyre_inference.v1.worker.spyre_model_runner import TorchSpyreModelRunner
 logger = init_logger(__name__)
 
 
+def _resolve_spyre_devices() -> None:
+    raw = os.environ.get("SPYRE_DEVICES") or os.environ.get("VLLM_AIU_PCIE_IDS")
+    if not raw:
+        return
+
+    tokens = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
+    if not tokens:
+        return
+
+    is_int_list = [t.isdigit() for t in tokens]
+    is_pcie_list = [":" in t for t in tokens]
+
+    # Disallow mixing integer indices and PCIe addresses
+    if any(is_int_list) and any(is_pcie_list):
+        raise ValueError(
+            f"SPYRE_DEVICES cannot mix integer indices and PCIe addresses: {raw!r}. "
+            "Please specify either all card indices (e.g. '4,5,6,7') or all PCIe addresses "
+            "(e.g. '0381:50:00.0,0382:60:00.0,0383:70:00.0,0384:80:00.0')."
+        )
+
+    if not all(is_int_list) and not all(is_pcie_list):
+        invalid = [t for t, is_i, is_p in zip(tokens, is_int_list, is_pcie_list) if not is_i and not is_p]
+        raise ValueError(f"Invalid device entry {invalid[0]!r} in SPYRE_DEVICES: {raw!r}")
+
+    # If all are integers, normalize to comma-separated string
+    if all(is_int_list):
+        os.environ["SPYRE_DEVICES"] = ",".join(tokens)
+        return
+
+    # If all are PCIe addresses, resolve them using AIU_WORLD_RANK_<idx>
+    pcie_to_idx = {}
+    for k, v in os.environ.items():
+        if k.startswith("AIU_WORLD_RANK_"):
+            try:
+                idx = int(k[len("AIU_WORLD_RANK_"):])
+                pcie_to_idx[v.strip().lower()] = idx
+            except ValueError:
+                pass
+
+    resolved_indices = []
+    for token in tokens:
+        t_lower = token.lower()
+        matched = pcie_to_idx.get(t_lower)
+        if matched is None:
+            for pcie_addr, idx in pcie_to_idx.items():
+                if pcie_addr.endswith(t_lower) or t_lower.endswith(pcie_addr):
+                    matched = idx
+                    break
+        if matched is None:
+            raise ValueError(
+                f"PCIe address {token!r} in SPYRE_DEVICES was not found among available devices: "
+                f"{list(pcie_to_idx.keys())}"
+            )
+        resolved_indices.append(str(matched))
+
+    os.environ["SPYRE_DEVICES"] = ",".join(resolved_indices)
+
+
 def _get_spyre_pcie_address(local_rank: int) -> str:
-    requested_devices = envs.SPYRE_DEVICES
+    requested_devices = os.environ.get("SPYRE_DEVICES")
     if not requested_devices:
         return "unknown"
 
@@ -99,6 +157,9 @@ class TorchSpyreWorker(Worker):
         os.environ.setdefault("WORLD_SIZE", str(world_size))
         os.environ.setdefault("LOCAL_RANK", str(self.local_rank))
         os.environ.setdefault("LOCAL_WORLD_SIZE", str(world_size))
+
+        # Normalize SPYRE_DEVICES (e.g. resolving PCIe addresses to card indices)
+        _resolve_spyre_devices()
 
         # A no-op when `import torch` already autoloaded the backend; needed when
         # TORCH_DEVICE_BACKEND_AUTOLOAD=0 disabled that.
